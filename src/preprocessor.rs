@@ -83,8 +83,8 @@ fn replace_all(
         replaced.push_str(&s[previous_end_index..start]);
 
         match typ {
-            GitType::Show { id, path, range } => {
-                if let Ok(contents) = git_show(id, path, range, repo) {
+            GitType::Show { id, path, ranges } => {
+                if let Ok(contents) = git_show(id, path, ranges, repo) {
                     replaced.push_str(&contents);
                     previous_end_index = end;
                 }
@@ -93,10 +93,10 @@ fn replace_all(
                 old,
                 new,
                 path,
-                range,
+                ranges,
                 options,
             } => {
-                if let Ok(contents) = git_diff(old, new, path, range, options, repo) {
+                if let Ok(contents) = git_diff(old, new, path, ranges, options, repo) {
                     replaced.push_str(&contents);
                     previous_end_index = end;
                 }
@@ -111,7 +111,7 @@ fn replace_all(
 fn git_show(
     id: &str,
     path: &str,
-    range: impl RangeBounds<usize>,
+    ranges: Vec<impl RangeBounds<usize>>,
     repo: &Repository,
 ) -> anyhow::Result<String> {
     let id = Oid::from_str(id)?;
@@ -126,15 +126,15 @@ fn git_show(
         .ok_or_else(|| anyhow!("Commit does not contain this file."))?;
 
     std::str::from_utf8(blob.content())
-        .map(|s| take_lines_comment_out_rest(s, range))
+        .map(|s| take_lines_comment_out_rest(s, ranges))
         .map_err(Into::into)
 }
 
-pub fn take_lines_comment_out_rest(s: &str, range: impl RangeBounds<usize>) -> String {
+pub fn take_lines_comment_out_rest(s: &str, ranges: Vec<impl RangeBounds<usize>>) -> String {
     let mut lines: Vec<String> = s.lines().map(ToOwned::to_owned).collect();
 
     for (i, line) in lines.iter_mut().enumerate() {
-        if !range.contains(&i) && !line.starts_with("# ") {
+        if !line.starts_with("# ") && ranges.iter().all(|range| !range.contains(&i)) {
             *line = format!("# {line}");
         }
     }
@@ -142,35 +142,57 @@ pub fn take_lines_comment_out_rest(s: &str, range: impl RangeBounds<usize>) -> S
     lines.join("\n")
 }
 
-pub fn parse_path_and_range<T: FromStr + Copy>(
-    path_and_range: &str,
-) -> Option<(&str, (Bound<T>, Bound<T>))> {
-    match path_and_range.split(':').collect::<Vec<_>>().as_slice() {
-        &[path] => Some((path, (Bound::<T>::Unbounded, Bound::<T>::Unbounded))),
-        &[path, line] => {
+pub fn parse_range<T: FromStr + Copy>(range: &str) -> Option<(Bound<T>, Bound<T>)> {
+    match range.split(':').collect::<Vec<_>>().as_slice() {
+        // not valid "src/main.rs:" -> parse_range("") -> &[""]
+        &[""] => None,
+        // "src/main.rs:2"
+        &[line] => {
             let line = line.parse().ok()?;
-            Some((path, (Bound::Included(line), Bound::Included(line))))
+            Some((Bound::Included(line), Bound::Included(line)))
         }
-        &[path, "", ""] => Some((path, (Bound::Unbounded, Bound::<T>::Unbounded))),
-        &[path, start, ""] => Some((
-            path,
-            (Bound::Included(start.parse().ok()?), Bound::<T>::Unbounded),
+        // "src/main.rs::"
+        &["", ""] => Some((Bound::Unbounded, Bound::<T>::Unbounded)),
+        // "src/main.rs:2:"
+        &[start, ""] => Some((Bound::Included(start.parse().ok()?), Bound::<T>::Unbounded)),
+        // "src/main.rs::4"
+        &["", end] => Some((
+            Bound::<T>::Unbounded,
+            Bound::<T>::Excluded(end.parse().ok()?),
         )),
-        &[path, "", end] => Some((
-            path,
-            (
-                Bound::<T>::Unbounded,
-                Bound::<T>::Excluded(end.parse().ok()?),
-            ),
-        )),
-        &[path, start, end] => Some((
-            path,
-            (
-                Bound::<T>::Included(start.parse().ok()?),
-                Bound::<T>::Excluded(end.parse().ok()?),
-            ),
+        // "src/main.rs:2:4"
+        &[start, end] => Some((
+            Bound::<T>::Included(start.parse().ok()?),
+            Bound::<T>::Excluded(end.parse().ok()?),
         )),
         _ => None,
+    }
+}
+
+/// Parse a path-range string to a path with a vec of bounds.
+/// A vec size of zero indicates an formating error.
+pub fn parse_path_and_ranges<T: FromStr + Copy>(
+    path_and_range: &str,
+) -> (&str, Vec<(Bound<T>, Bound<T>)>) {
+    match path_and_range.split_once(':') {
+        // "src/main.rs"
+        None => (
+            path_and_range,
+            vec![(Bound::<T>::Unbounded, Bound::<T>::Unbounded)],
+        ),
+        // "src/main.rs:[2, 4:8, 16:]"
+        Some((path, array)) if array.starts_with('[') && array.ends_with(']') => (
+            path,
+            // drop first and last character
+            array[1..array.len() - 1]
+                .split(',')
+                .map(str::trim)
+                .inspect(|item| eprintln!("{item:?}"))
+                .filter_map(parse_range)
+                .collect(),
+        ),
+        // "src/main.rs:2:4"
+        Some((path, range)) => (path, parse_range(range).into_iter().collect()),
     }
 }
 
@@ -178,7 +200,7 @@ fn git_diff(
     old: &str,
     new: &str,
     path: &str,
-    range: impl RangeBounds<usize>,
+    ranges: Vec<impl RangeBounds<usize>>,
     options: Vec<&str>,
     repo: &Repository,
 ) -> anyhow::Result<String> {
@@ -239,7 +261,7 @@ fn git_diff(
         true
     })?;
 
-    Ok(take_lines_comment_out_rest(&str, range))
+    Ok(take_lines_comment_out_rest(&str, ranges))
 }
 
 #[derive(Debug)]
@@ -264,13 +286,13 @@ enum GitType<'a> {
     Show {
         id: &'a str,
         path: &'a str,
-        range: (Bound<usize>, Bound<usize>),
+        ranges: Vec<(Bound<usize>, Bound<usize>)>,
     },
     Diff {
         old: &'a str,
         new: &'a str,
         path: &'a str,
-        range: (Bound<usize>, Bound<usize>),
+        ranges: Vec<(Bound<usize>, Bound<usize>)>,
         options: Vec<&'a str>,
     },
 }
@@ -290,26 +312,27 @@ impl<'a> TryFrom<Captures<'a>> for GitType<'a> {
         subcmd.sort_unstable_by(|a, b| a.starts_with('-').cmp(&b.starts_with('-')));
 
         let cmd = match subcmd.as_slice() {
-            &["show", id_and_path_and_range, ..] => id_and_path_and_range
+            &["show", id_and_path_and_ranges, ..] => id_and_path_and_ranges
                 .split_once(":")
-                .map(|(id, path_and_range)| {
-                    parse_path_and_range(path_and_range).map(|(path, range)| GitType::Show {
-                        id,
-                        path,
-                        range,
-                    })
+                .map(|(id, path_and_ranges)| {
+                    let (path, ranges) = parse_path_and_ranges(path_and_ranges);
+                    eprintln!("{ranges:?}");
+
+                    (ranges.len() != 0).then(|| GitType::Show { id, path, ranges })
                 })
                 .flatten(),
-            &["diff", old, new, path_and_range, ref options @ ..] => {
+            &["diff", old, new, path_and_ranges, ref options @ ..] => {
                 // needs to be owned, sinced they got resorted
                 // and would not be contigous in memory
                 let options = options.to_owned();
 
-                parse_path_and_range(path_and_range).map(|(path, range)| GitType::Diff {
+                let (path, ranges) = parse_path_and_ranges(path_and_ranges);
+
+                (ranges.len() != 0).then(|| GitType::Diff {
                     old,
                     new,
                     path,
-                    range,
+                    ranges,
                     options,
                 })
             }
