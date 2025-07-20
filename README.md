@@ -51,16 +51,16 @@ The `diff` command supports the following options:
 Similar to [rustdoc_include](https://rust-lang.github.io/mdBook/format/mdbook.html#including-a-file-but-initially-hiding-all-except-specified-lines) feature of mdBook, you can display only specific lines while hiding the rest:
 
 ```markdown
-# show line 2, hide all others
+# show line 2
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs:2 }}
 
-# show all lines ..4
+# show from line 4 to the end
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs:4: }}
 
-# show all lines 4..
+# show from start to line 4
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs::4 }}
 
-# show all lines 2..4
+# show lines 2 through 4 (exclusive)
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs:2:4 }}
 ```
 
@@ -70,7 +70,7 @@ Unlike `mdBook`, this preprocessor also supports **multiple ranges**:
 # show line 2 and 4
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs:[2,4] }}
 
-# show lines 2, 4..8 and 12..
+# show lines 2, 4 to 8, and 12 to the end
 {{ #git show c702619b19462b2bff877076a01333fd974613fe:src/main.rs:[2,4:8,12:] }}
 ```
 
