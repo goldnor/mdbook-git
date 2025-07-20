@@ -187,7 +187,6 @@ pub fn parse_path_and_ranges<T: FromStr + Copy>(
             array[1..array.len() - 1]
                 .split(',')
                 .map(str::trim)
-                .inspect(|item| eprintln!("{item:?}"))
                 .filter_map(parse_range)
                 .collect(),
         ),
@@ -316,7 +315,6 @@ impl<'a> TryFrom<Captures<'a>> for GitType<'a> {
                 .split_once(":")
                 .map(|(id, path_and_ranges)| {
                     let (path, ranges) = parse_path_and_ranges(path_and_ranges);
-                    eprintln!("{ranges:?}");
 
                     (ranges.len() != 0).then(|| GitType::Show { id, path, ranges })
                 })
